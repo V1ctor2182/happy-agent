@@ -622,8 +622,9 @@ export * from "./userInput/index.js";
 // Observation: what the agent records about itself — logs, traces, and a readable history dump.
 export * from "./observation/index.js";
 
-// Integration modules: Happy clients, MCP servers, and skills.
+// Integration modules: Happy clients, MCP servers, skills, and native command workflows.
 export * from "./mcp/index.js";
+export * from "./nativeCommands/index.js";
 export * from "./slashCommands/index.js";
 export * from "./skills/index.js";
 

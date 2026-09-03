@@ -22,7 +22,6 @@ import {
     SlashCommandNotFoundError,
     slashCommandDefinitionSchema,
     type SlashCommandContributor,
-    type SlashCommandDefinition,
     type SlashCommandImageAsset,
     type SlashCommandInvocation,
     type SlashCommandInvocationResult,
@@ -141,10 +140,31 @@ export class SlashCommandsModule implements AgentModule {
                         `The ${owner.name} module returned an invalid slash command definition.`,
                     );
                 }
-                if (names.has(definition.name)) {
-                    throw new Error(
-                        `More than one module returned the /${definition.name} command.`,
+                const existingIndex = commands.findIndex(
+                    (command) => command.descriptor.name === definition.name,
+                );
+                if (existingIndex >= 0) {
+                    const existing = commands[existingIndex]!;
+                    if (definition.kind === "workflow" && existing.descriptor.kind === "skill") {
+                        continue;
+                    }
+                    if (definition.kind === "skill" && existing.descriptor.kind === "workflow") {
+                        commands.splice(existingIndex, 1);
+                        names.delete(definition.name);
+                    } else {
+                        throw new Error(
+                            `More than one module returned the /${definition.name} command.`,
+                        );
+                    }
+                }
+                if (commands.length >= MAX_SLASH_COMMANDS && definition.kind === "skill") {
+                    const workflowIndex = commands.findLastIndex(
+                        (command) => command.descriptor.kind === "workflow",
                     );
+                    if (workflowIndex >= 0) {
+                        names.delete(commands[workflowIndex]!.descriptor.name);
+                        commands.splice(workflowIndex, 1);
+                    }
                 }
                 if (commands.length >= MAX_SLASH_COMMANDS) {
                     throw new Error(

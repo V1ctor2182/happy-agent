@@ -1,4 +1,5 @@
 import type { Context } from "@steve.kite/stdlib";
+import { MAX_SLASH_COMMANDS } from "@slopus/happy-agent-client";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -169,6 +170,56 @@ describe("SlashCommandsModule", () => {
                     arguments: "now",
                 }),
             ).rejects.toBeInstanceOf(SlashCommandInputError);
+        } finally {
+            database.close();
+        }
+    });
+
+    it("gives skills precedence over workflow aliases and catalog capacity", async () => {
+        const events = new EventsModule();
+        const database = moduleDatabase(events.migrations ?? [], "slash-command-priority-test");
+        await database.ready;
+        try {
+            await events.beforeStart?.(database.context);
+            const workflows = new Contributor(
+                "workflows",
+                Array.from({ length: MAX_SLASH_COMMANDS }, (_, index) => ({
+                    description: `Workflow ${String(index)}.`,
+                    hasArguments: true,
+                    kind: "workflow",
+                    name: index === 0 ? "review" : `workflow-${String(index)}`,
+                })),
+            );
+            const skills = new Contributor("skills", [
+                {
+                    description: "Project review skill.",
+                    hasArguments: true,
+                    kind: "skill",
+                    name: "review",
+                },
+                {
+                    description: "Project build skill.",
+                    hasArguments: true,
+                    kind: "skill",
+                    name: "project-build",
+                },
+            ]);
+            const commands = new SlashCommandsModule(events, workflows, skills);
+            await commands.beforeStart?.(database.context, agents);
+
+            const catalog = await commands.catalog(database.context, "agent-1");
+            expect(catalog).toHaveLength(MAX_SLASH_COMMANDS);
+            expect(catalog).toContainEqual(
+                expect.objectContaining({ kind: "skill", name: "review" }),
+            );
+            expect(catalog).toContainEqual(
+                expect.objectContaining({ kind: "skill", name: "project-build" }),
+            );
+            expect(catalog).not.toContainEqual(expect.objectContaining({ name: "workflow-255" }));
+
+            await commands.invoke(database.context, "agent-1", "review", invocation);
+            expect(skills.invocations).toHaveLength(1);
+            expect(workflows.invocations).toHaveLength(0);
         } finally {
             database.close();
         }
