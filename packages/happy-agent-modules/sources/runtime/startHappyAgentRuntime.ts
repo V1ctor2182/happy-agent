@@ -51,6 +51,7 @@ import { ImageGenerationModule } from "../imageGeneration/index.js";
 import { MenuBarModule } from "../menuBar/index.js";
 import { McpModule } from "../mcp/index.js";
 import { ModelSwitchModule } from "../modelSwitch/ModelSwitchModule.js";
+import { NativeCommandsModule } from "../nativeCommands/index.js";
 import { ObservationModule } from "../observation/index.js";
 import { PermissionsModule } from "../permissions/index.js";
 import { PresenceModule } from "../presence/index.js";
@@ -142,6 +143,7 @@ export interface HappyAgentRuntimeModules {
     readonly menuBar: MenuBarModule;
     readonly mcp: McpModule;
     readonly modelSwitch: ModelSwitchModule;
+    readonly nativeCommands: NativeCommandsModule;
     readonly observation: ObservationModule;
     readonly permissions: PermissionsModule;
     readonly presence: PresenceModule;
@@ -464,7 +466,13 @@ export async function startHappyAgentRuntime(
         const tasks = new TasksModule();
         const usage = new UsageModule(events);
         const compactions = new CompactionsModule(events, usage, history);
-        const slashCommands = new SlashCommandsModule(events, compactions, compute.skillsModule);
+        const nativeCommands = new NativeCommandsModule();
+        const slashCommands = new SlashCommandsModule(
+            events,
+            compactions,
+            nativeCommands,
+            compute.skillsModule,
+        );
         const contextWindow = new ContextWindowModule(config);
         const workflows = new WorkflowsModule(config, collaboration, compute.computeModule);
         const codeMode = new CodeModeModule(config, compute.computeModule);
@@ -522,6 +530,7 @@ export async function startHappyAgentRuntime(
             menuBar,
             mcp,
             modelSwitch,
+            nativeCommands,
             observation,
             permissions,
             presence,
@@ -566,6 +575,7 @@ export async function startHappyAgentRuntime(
             providerUsage,
             events,
             compactions,
+            nativeCommands,
             slashCommands,
             contextWindow,
             profile,
