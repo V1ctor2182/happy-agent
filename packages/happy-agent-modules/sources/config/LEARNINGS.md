@@ -56,3 +56,11 @@ Provider-level `include_subagent_models` and `exclude_subagent_models` use exact
 same exclusion precedence as the ordinary model filters, but they are a separate delegation policy.
 They must leave the model catalog and picker unchanged. Collaboration asks configuration about each
 provider/model route when describing and validating new subagents, including workflow-created ones.
+
+## Discovered models extend, never replace, the curated catalog
+
+A vendor listing says what an account can reach today; it is not a source of wire details. A
+discovered route is merged after the curated entries of the same provider, skipped when a curated
+route already has its id, filtered by the same include and exclude rules, and persisted under the
+agent home so the next load offers it without a network call. A failed or empty listing leaves the
+last persisted answer in place, and nothing discovered may remove a curated route.

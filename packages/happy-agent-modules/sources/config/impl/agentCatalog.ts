@@ -31,7 +31,10 @@ export interface AgentModelContext {
     readonly autoCompactWindow: number;
 }
 
-type CatalogAgentModel = AgentModel & AgentModelContext;
+export type CatalogAgentModel = AgentModel & AgentModelContext;
+
+/** Routes a signed-in account listed beyond the curated catalog, keyed by configured provider ID. */
+export type DiscoveredCatalogEntries = Readonly<Record<string, readonly CatalogAgentModel[]>>;
 
 export interface SmartProviderModelRoute {
     readonly candidates: readonly string[];
@@ -105,8 +108,9 @@ const EVERY_EFFORT: AgentModel["effortLevels"] = ["off", "low", "medium", "high"
 const ALL_BUT_OFF: AgentModel["effortLevels"] = ["low", "medium", "high", "xhigh", "max"];
 
 /**
- * The curated catalog. Happy Agent never asks a vendor which models exist; the list is source, and a
- * configured provider entry decides which of these its own key serves.
+ * The curated catalog: the routes Happy Agent knows without asking anyone, with hand-checked wire
+ * details. Model discovery appends whatever a signed-in account lists beyond these, and a curated
+ * entry always wins over a discovered one carrying the same ID.
  */
 const CATALOG: readonly CatalogAgentModel[] = [
     model("codex", "openai/gpt-5.6-sol", "GPT-5.6 Sol", ALL_BUT_OFF, "medium", ["priority"]),
@@ -143,9 +147,10 @@ export function agentModels(
     configuration: HappyAgentConfiguration,
     onIgnored?: (message: string) => void,
     isProviderEnabled?: (id: string) => boolean,
+    discovered: DiscoveredCatalogEntries = {},
 ): readonly CatalogAgentModel[] {
     const values = configuration.values;
-    const available = agentModelCatalog(configuration, isProviderEnabled)
+    const available = agentModelCatalog(configuration, isProviderEnabled, discovered)
         .filter((candidate) => candidate.enabled)
         .map(({ enabled: _enabled, ...candidate }) => candidate as CatalogAgentModel);
     const wantedModel = values.defaults.modelId;
@@ -190,14 +195,13 @@ export function agentModelCatalog(
     configuration: HappyAgentConfiguration,
     isProviderEnabled: (id: string) => boolean = (id) =>
         configuration.values.providers[id]?.enabled !== false,
+    discovered: DiscoveredCatalogEntries = {},
 ): readonly ConfiguredAgentModel[] {
     const concreteModels: ConfiguredAgentModel[] = [];
     const values = configuration.values;
     for (const [id, provider] of Object.entries(values.providers)) {
         if (provider.type === "smart") continue;
-        const source = provider.type === "bedrock" ? BEDROCK_CATALOG : CATALOG;
-        for (const candidate of source) {
-            if (provider.type !== "bedrock" && candidate.providerId !== provider.type) continue;
+        for (const candidate of providerCatalog(provider, discovered[id])) {
             const enabled =
                 isProviderEnabled(id) &&
                 provider.includeModels?.includes(candidate.id) !== false &&
@@ -310,6 +314,7 @@ export function agentProviders(
     onAccountUsage?: (usage: ProviderUsage) => void,
     isProviderEnabled: (providerId: string) => boolean = () => true,
     providerSignal: (providerId: string) => AbortSignal | undefined = () => undefined,
+    discovered: DiscoveredCatalogEntries = {},
 ): AgentProviders {
     const providers = new AgentProviders();
     const retryLimit = configuration.values.settings.inferenceMaxRetries;
@@ -324,7 +329,11 @@ export function agentProviders(
     }
     for (const [id, provider] of Object.entries(configuration.values.providers)) {
         if (provider.type !== "smart") continue;
-        const route = smartProviderRoute(configuration, id);
+        const route = smartProviderRoute(
+            configuration,
+            id,
+            concreteAgentModelCatalog(configuration, discovered),
+        );
         if (route === undefined || route.models.length === 0) continue;
         const cache = new Map<string, RoundRobinRouterProvider>();
         providers.add(
@@ -361,17 +370,40 @@ export function agentProviders(
 
 function concreteAgentModelCatalog(
     configuration: HappyAgentConfiguration,
+    discovered: DiscoveredCatalogEntries = {},
 ): readonly ConfiguredAgentModel[] {
     const models: ConfiguredAgentModel[] = [];
     for (const [id, provider] of Object.entries(configuration.values.providers)) {
         if (provider.type === "smart") continue;
-        const source = provider.type === "bedrock" ? BEDROCK_CATALOG : CATALOG;
-        for (const candidate of source) {
-            if (provider.type !== "bedrock" && candidate.providerId !== provider.type) continue;
+        for (const candidate of providerCatalog(provider, discovered[id])) {
             models.push({ ...candidate, enabled: true, providerId: id });
         }
     }
     return models;
+}
+
+/**
+ * The curated routes one concrete provider serves, then the routes its account listed beyond
+ * them. A curated entry is the one with checked wire details, so it wins over a discovered entry
+ * carrying the same ID.
+ */
+function providerCatalog(
+    provider: ConcreteConfiguredProvider,
+    discovered: readonly CatalogAgentModel[] | undefined,
+): readonly CatalogAgentModel[] {
+    const curated =
+        provider.type === "bedrock"
+            ? BEDROCK_CATALOG
+            : CATALOG.filter((candidate) => candidate.providerId === provider.type);
+    if (discovered === undefined || discovered.length === 0) return curated;
+    const known = new Set(curated.map((candidate) => candidate.id));
+    const added: CatalogAgentModel[] = [];
+    for (const candidate of discovered) {
+        if (known.has(candidate.id)) continue;
+        known.add(candidate.id);
+        added.push(candidate);
+    }
+    return [...curated, ...added];
 }
 
 function bedrockModelRegion(

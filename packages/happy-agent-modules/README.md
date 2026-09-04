@@ -124,17 +124,18 @@ its public methods, and its storage and event contracts.
 
 ### The conversation
 
-| Module                                          | What it adds                                                                                                                              |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| [Config](sources/config/README.md)              | One frozen filesystem layout and layered Happy Agent settings snapshot shared by every other module.                                      |
-| [Provider scan](sources/providerScan/README.md) | Local credential discovery, durable provider overrides, live enablement, and bounded account verification.                                |
-| [Observation](sources/observation/README.md)    | What the agent records about itself: a pino log file, optional OpenTelemetry traces, and a readable per-agent history dump.               |
-| [System prompt](sources/systemPrompt/README.md) | Native per-vendor instructions, environment context, and live global/security/project AGENTS.md guidance.                                 |
-| [History](sources/history/README.md)            | The agent's own durable record of what happened, separate from the compactable model context, readable back through `read_agent_history`. |
-| [Model switch](sources/modelSwitch/README.md)   | An honest notice when switching models resets a context that cannot be replayed, with a bounded excerpt of what was lost.                 |
-| [Skills](sources/skills/README.md)              | User and project skills discovered live under `.agents/skills`, exposed as `list_skills` and `read_skill`.                                |
-| [Events](sources/events/README.md)              | A bounded, cursor-addressable journal of what happened, shared by every agent in the collection.                                          |
-| [Titles](sources/titles/README.md)              | The names a first message settles — the chat's title, and the workspace and branch it works in.                                           |
+| Module                                              | What it adds                                                                                                                              |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| [Config](sources/config/README.md)                  | One frozen filesystem layout and layered Happy Agent settings snapshot shared by every other module.                                      |
+| [Provider scan](sources/providerScan/README.md)     | Local credential discovery, durable provider overrides, live enablement, and bounded account verification.                                |
+| [Model discovery](sources/modelDiscovery/README.md) | Live Codex and Claude model listings that extend the curated catalog, refreshed after startup, hourly, and after a credential change.     |
+| [Observation](sources/observation/README.md)        | What the agent records about itself: a pino log file, optional OpenTelemetry traces, and a readable per-agent history dump.               |
+| [System prompt](sources/systemPrompt/README.md)     | Native per-vendor instructions, environment context, and live global/security/project AGENTS.md guidance.                                 |
+| [History](sources/history/README.md)                | The agent's own durable record of what happened, separate from the compactable model context, readable back through `read_agent_history`. |
+| [Model switch](sources/modelSwitch/README.md)       | An honest notice when switching models resets a context that cannot be replayed, with a bounded excerpt of what was lost.                 |
+| [Skills](sources/skills/README.md)                  | User and project skills discovered live under `.agents/skills`, exposed as `list_skills` and `read_skill`.                                |
+| [Events](sources/events/README.md)                  | A bounded, cursor-addressable journal of what happened, shared by every agent in the collection.                                          |
+| [Titles](sources/titles/README.md)                  | The names a first message settles — the chat's title, and the workspace and branch it works in.                                           |
 
 ### The machine
 
