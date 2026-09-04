@@ -50,6 +50,7 @@ import { HistoryModule } from "../history/index.js";
 import { ImageGenerationModule } from "../imageGeneration/index.js";
 import { MenuBarModule } from "../menuBar/index.js";
 import { McpModule } from "../mcp/index.js";
+import { ModelDiscoveryModule } from "../modelDiscovery/index.js";
 import { ModelSwitchModule } from "../modelSwitch/ModelSwitchModule.js";
 import { NativeCommandsModule } from "../nativeCommands/index.js";
 import { ObservationModule } from "../observation/index.js";
@@ -142,6 +143,7 @@ export interface HappyAgentRuntimeModules {
     readonly installation: InstallationModule;
     readonly menuBar: MenuBarModule;
     readonly mcp: McpModule;
+    readonly modelDiscovery: ModelDiscoveryModule;
     readonly modelSwitch: ModelSwitchModule;
     readonly nativeCommands: NativeCommandsModule;
     readonly observation: ObservationModule;
@@ -411,6 +413,7 @@ export async function startHappyAgentRuntime(
         const abort = new AbortModule(compute.computeModule);
         const git = new GitModule(config);
         const durableFunctions = new DurableFunctionsModule();
+        const modelDiscovery = new ModelDiscoveryModule(config, durableFunctions);
         const projects = new ProjectsModule(config, git, abort, durableFunctions);
         const workspaces = new WorkspacesModule(config, projects, git, abort, durableFunctions);
         const bots = new BotsModule(config, abort);
@@ -498,6 +501,7 @@ export async function startHappyAgentRuntime(
             usage,
             providerUsage,
             providerScan,
+            modelDiscovery,
             happy,
             profile,
             compute.computeModule,
@@ -529,6 +533,7 @@ export async function startHappyAgentRuntime(
             installation,
             menuBar,
             mcp,
+            modelDiscovery,
             modelSwitch,
             nativeCommands,
             observation,
@@ -561,6 +566,7 @@ export async function startHappyAgentRuntime(
             cloud,
             config,
             providerScan,
+            modelDiscovery,
             observation,
             systemPrompt,
             toolDiscovery,

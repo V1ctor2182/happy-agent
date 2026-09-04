@@ -108,7 +108,7 @@ The outer agent loop never replays a provider request, tool, command, or session
 
 ## Model catalogs
 
-Hardcode each provider's supported model catalog in Rig. The daemon must not discover, list, or fetch models from provider APIs during startup or session creation. Update the curated catalog in source when provider models change.
+Hardcode each provider's supported model catalog in Rig; the curated catalog remains the source of truth for wire details, defaults, and ordering. The daemon must not fetch models from provider APIs during startup or session creation. `ModelDiscoveryModule` may list Codex and Claude models in the background (shortly after startup, hourly, and after a credential change) and persist the answer under the agent home; discovered entries only extend the curated catalog and never replace, reorder, or remove a curated route. Update the curated catalog in source when a provider's wire details change.
 
 Use canonical provider keys throughout the product: `claude` for Anthropic models, `codex` for OpenAI and GPT models, and `grok` for xAI and Grok models. SDK, transport, and implementation names must not leak into provider keys.
 

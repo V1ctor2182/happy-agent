@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -25,9 +25,14 @@ import {
     agentProviders,
     smartProviderRoute,
     type AgentModelContext,
+    type CatalogAgentModel,
+    type DiscoveredCatalogEntries,
     type ConfiguredAgentModel,
 } from "./impl/agentCatalog.js";
-import { loadConfiguredProviderUsage } from "./impl/loadConfiguredProviderUsage.js";
+import {
+    loadConfiguredProviderUsage,
+    providerEnvironment as isolatedProviderEnvironment,
+} from "./impl/loadConfiguredProviderUsage.js";
 import { ProviderEnablement, providerRegistryUntil } from "./impl/providerRegistryUntil.js";
 import { readGlobalInstructions } from "./impl/readGlobalInstructions.js";
 import { HAPPY_TOML_TEMPLATE, MCP_TOML_TEMPLATE } from "./impl/userConfigurationTemplate.js";
@@ -157,6 +162,7 @@ const settingsInputSchema = Type.Object(
 const providerCommonInput = {
     auto_enable: Type.Optional(Type.Boolean()),
     credential_isolation: Type.Optional(Type.Literal(true)),
+    discover_models: Type.Optional(Type.Boolean()),
     enabled: Type.Optional(Type.Boolean()),
     exclude_models: Type.Optional(boundedStringArraySchema),
     exclude_subagent_models: Type.Optional(boundedStringArraySchema),
@@ -508,6 +514,7 @@ const partialValuesSchema = Type.Object(
 const providerRecordBase = {
     autoEnable: Type.Optional(Type.Boolean()),
     credentialIsolation: Type.Optional(Type.Literal(true)),
+    discoverModels: Type.Optional(Type.Boolean()),
     enabled: Type.Boolean(),
     excludeModels: Type.Optional(boundedStringArraySchema),
     excludeSubagentModels: Type.Optional(boundedStringArraySchema),
@@ -893,6 +900,7 @@ const pathSchemaSet = Type.Object(
         autoDatabasePath: pathSchema,
         configHome: pathSchema,
         databasePath: pathSchema,
+        discoveredModelsPath: pathSchema,
         docsHome: pathSchema,
         generatedPath: pathSchema,
         globalConfigPath: pathSchema,
@@ -1081,6 +1089,60 @@ export interface RuntimeProviderStateUpdate {
     readonly enabled?: boolean;
 }
 
+const MAX_DISCOVERED_MODELS = 512;
+const discoveredEffortSchema = Type.Union([
+    Type.Literal("off"),
+    Type.Literal("minimal"),
+    Type.Literal("low"),
+    Type.Literal("medium"),
+    Type.Literal("high"),
+    Type.Literal("xhigh"),
+    Type.Literal("max"),
+]);
+/** One route a signed-in account listed, carrying everything the catalog needs to offer it. */
+export const discoveredAgentModelSchema = Type.Object(
+    {
+        autoCompactWindow: Type.Integer({ minimum: 1 }),
+        contextWindow: Type.Integer({ minimum: 1 }),
+        defaultEffort: discoveredEffortSchema,
+        effortLevels: Type.Array(discoveredEffortSchema, { minItems: 1, maxItems: 16 }),
+        id: Type.String({ minLength: 1, maxLength: 256 }),
+        name: Type.String({ minLength: 1, maxLength: 256 }),
+        serviceTiers: Type.Optional(Type.Array(Type.Literal("priority"), { maxItems: 8 })),
+    },
+    { additionalProperties: false },
+);
+/** What one account answered, and where the answer came from. */
+export const discoveredProviderCatalogSchema = Type.Object(
+    {
+        fetchedAt: Type.Integer({ minimum: 0 }),
+        models: Type.Array(discoveredAgentModelSchema, { maxItems: MAX_DISCOVERED_MODELS }),
+        source: Type.Union([
+            Type.Literal("chatgpt"),
+            Type.Literal("codex-cache"),
+            Type.Literal("anthropic"),
+        ]),
+    },
+    { additionalProperties: false },
+);
+const discoveredModelsFileSchema = Type.Object(
+    {
+        providers: Type.Record(Type.String({ minLength: 1 }), discoveredProviderCatalogSchema, {
+            maxProperties: MAX_PROVIDER_COUNT,
+        }),
+        version: Type.Literal(1),
+    },
+    { additionalProperties: false },
+);
+export type DiscoveredAgentModel = Static<typeof discoveredAgentModelSchema>;
+export type DiscoveredProviderCatalog = Static<typeof discoveredProviderCatalogSchema>;
+export type DiscoveredModelSource = DiscoveredProviderCatalog["source"];
+
+interface DiscoveredModelsRead {
+    readonly catalogs: ReadonlyMap<string, DiscoveredProviderCatalog>;
+    readonly notice?: string;
+}
+
 /**
  * The resolved Happy Agent configuration and filesystem layout. It is loaded before the agent
  * system and passed to every module that needs configuration.
@@ -1097,6 +1159,8 @@ export class ConfigModule implements AgentModule {
     readonly #runtimeLock: AsyncLock = asyncLock({ reentry: "allow" });
     #mcpServers: HappyAgentConfigValues["mcpServers"];
     #runtimeValues: PartialValues;
+    readonly #discoveryLock: AsyncLock = asyncLock({ reentry: "allow" });
+    readonly #discovered = new Map<string, DiscoveredProviderCatalog>();
     #providerEnablement: ProviderEnablement | undefined;
     readonly #catalogNotices: string[] = [];
     #projectsHome: string | undefined;
@@ -1133,12 +1197,17 @@ export class ConfigModule implements AgentModule {
         runtimeValues: PartialValues,
         scripted: ConfigInferenceOverride | ConfigInferenceFactory | undefined,
         environment: Readonly<NodeJS.ProcessEnv>,
+        discovered: DiscoveredModelsRead,
     ) {
         this.configuration = configuration;
         this.#mcpServers = configuration.values.mcpServers;
         this.#runtimeValues = structuredClone(runtimeValues);
         this.#scripted = scripted;
         this.#environment = environment;
+        for (const [providerId, catalog] of discovered.catalogs) {
+            this.#discovered.set(providerId, catalog);
+        }
+        if (discovered.notice !== undefined) this.#catalogNotices.push(discovered.notice);
         for (const id of Object.keys(configuration.values.providers)) {
             this.#providerEnabled.set(id, this.configuredProviderOverride(id) ?? false);
         }
@@ -1173,20 +1242,26 @@ export class ConfigModule implements AgentModule {
                 if (!this.#catalogNotices.includes(message)) this.#catalogNotices.push(message);
             },
             (id) => this.isProviderEnabled(id),
+            this.#discoveredEntries(),
         );
     }
 
     /** Every configured route independent of its live provider gate. */
     get offeredModels(): readonly AgentModel[] {
-        return this.#scriptedModels() ?? agentModels(this.configuration, undefined, () => true);
+        return (
+            this.#scriptedModels() ??
+            agentModels(this.configuration, undefined, () => true, this.#discoveredEntries())
+        );
     }
 
     /** Every configured provider/model route, including disabled and filtered catalog entries. */
     get catalog(): readonly ConfiguredAgentModel[] {
         const scripted = this.#scriptedModels();
         const scriptedProviderIds = new Set(scripted?.map((model) => model.providerId) ?? []);
-        const catalog = agentModelCatalog(this.configuration, (id) =>
-            this.isProviderEnabled(id),
+        const catalog = agentModelCatalog(
+            this.configuration,
+            (id) => this.isProviderEnabled(id),
+            this.#discoveredEntries(),
         ).filter((model) => !scriptedProviderIds.has(model.providerId));
         if (scripted !== undefined) {
             for (const model of scripted) {
@@ -1201,12 +1276,16 @@ export class ConfigModule implements AgentModule {
         return catalog;
     }
 
-    /** Curated context limits for one enabled provider/model route. */
+    /** Context limits for one enabled provider/model route, curated or discovered. */
     modelContext(providerId: string, modelId: string): AgentModelContext | undefined {
-        const enabled = this.models.some(
-            (model) => model.providerId === providerId && model.id === modelId,
+        const model = this.models.find(
+            (candidate) => candidate.providerId === providerId && candidate.id === modelId,
         );
-        return enabled ? agentModelContext(modelId) : undefined;
+        if (model === undefined) return undefined;
+        const live = model as Partial<AgentModelContext>;
+        return typeof live.contextWindow === "number" && typeof live.autoCompactWindow === "number"
+            ? { autoCompactWindow: live.autoCompactWindow, contextWindow: live.contextWindow }
+            : agentModelContext(modelId);
     }
 
     /**
@@ -1339,6 +1418,76 @@ export class ConfigModule implements AgentModule {
             await writeRuntimeConfigurationFile(this.configuration.paths.runtimeConfigPath, next);
             this.#runtimeValues = next;
         });
+    }
+
+    /** The routes one configured account listed beyond the curated catalog, if it ever answered. */
+    discoveredCatalog(providerId: string): DiscoveredProviderCatalog | undefined {
+        return this.#discovered.get(providerId);
+    }
+
+    /**
+     * Whether the daemon may ask the vendor behind one account which models it serves.
+     *
+     * Only Codex and Claude accounts list models, a person switches an account off with
+     * `discover_models = false`, and a scripted test catalog owns its complete list.
+     */
+    modelDiscoveryEnabled(providerId: string): boolean {
+        if (this.#scripted !== undefined) return false;
+        const provider = this.configuration.values.providers[providerId];
+        if (provider === undefined || provider.type === "smart") return false;
+        if (provider.type !== "codex" && provider.type !== "claude") return false;
+        return provider.discoverModels !== false;
+    }
+
+    /** The environment one account may read credentials from, honouring its credential isolation. */
+    providerEnvironment(providerId: string): NodeJS.ProcessEnv {
+        const provider = this.configuration.values.providers[providerId];
+        return isolatedProviderEnvironment(
+            provider !== undefined &&
+                provider.type !== "smart" &&
+                provider.credentialIsolation === true,
+            { ...process.env, ...this.#environment },
+        );
+    }
+
+    /**
+     * Durably replace what one account lists beyond the curated catalog. Returns whether the set
+     * of routes changed, so a refresh that found nothing new is told apart from one that did.
+     */
+    async updateDiscoveredModels(
+        ctx: Context,
+        providerId: string,
+        catalog: DiscoveredProviderCatalog,
+    ): Promise<boolean> {
+        if (this.configuration.values.providers[providerId] === undefined) {
+            throw new Error(`Provider "${providerId}" is not configured.`);
+        }
+        if (!Value.Check(discoveredProviderCatalogSchema, catalog)) {
+            throw new Error("The discovered model catalog is invalid.");
+        }
+        return await this.#discoveryLock.runInLock(ctx, async () => {
+            const previous = this.#discovered.get(providerId);
+            const next = structuredClone(catalog);
+            const changed =
+                previous === undefined || !sameDiscoveredModels(previous.models, next.models);
+            const persisted = new Map(this.#discovered);
+            persisted.set(providerId, next);
+            await writeDiscoveredModelsFile(
+                this.configuration.paths.discoveredModelsPath,
+                persisted,
+            );
+            this.#discovered.set(providerId, next);
+            return changed;
+        });
+    }
+
+    #discoveredEntries(): DiscoveredCatalogEntries {
+        const entries: Record<string, readonly CatalogAgentModel[]> = {};
+        for (const [providerId, catalog] of this.#discovered) {
+            if (catalog.models.length === 0) continue;
+            entries[providerId] = catalog.models.map((model) => ({ ...model, providerId }));
+        }
+        return entries;
     }
 
     /** Resolve an account without consulting its live gate, for bounded scans and verification. */
@@ -1538,6 +1687,7 @@ export class ConfigModule implements AgentModule {
                     (usage) => this.#reportAccountUsage(usage),
                     (id) => this.isProviderEnabled(id),
                     (id) => this.#providerEnablement?.signal(id),
+                    this.#discoveredEntries(),
                 );
             // A test-owned inference registry is already authenticated. Initialize all its
             // accounts as usable, including canonical IDs whose production defaults are off. This
@@ -1799,6 +1949,7 @@ export class ConfigModule implements AgentModule {
             readConfigSource(paths.runtimeConfigPath, "runtime"),
             readConfigSource(paths.mcpConfigPath, "global"),
         ]);
+        const discovered = await readDiscoveredModelsFile(paths.discoveredModelsPath);
         const localValues = withoutProjectMachineSettings(local.values);
         const globalValues = withoutMcpServers(global.values);
         const runtimeValues = withoutMcpServers(runtime.values);
@@ -1832,6 +1983,7 @@ export class ConfigModule implements AgentModule {
             runtimeValues,
             options.inference,
             Object.freeze({ ...options.environment }),
+            discovered,
         );
     }
 }
@@ -1873,6 +2025,81 @@ async function writeRuntimeConfigurationFile(path: string, values: PartialValues
     } finally {
         await rm(temporary, { force: true }).catch(() => undefined);
     }
+}
+
+/** The durable discovered lists, or none when the file is absent, unreadable, or malformed. */
+async function readDiscoveredModelsFile(path: string): Promise<DiscoveredModelsRead> {
+    let contents: string;
+    try {
+        contents = await readFile(path, "utf8");
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return { catalogs: new Map() };
+        return {
+            catalogs: new Map(),
+            notice: `The discovered model catalog at ${path} could not be read and was ignored.`,
+        };
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(contents);
+    } catch {
+        return {
+            catalogs: new Map(),
+            notice: `The discovered model catalog at ${path} is not valid JSON and was ignored.`,
+        };
+    }
+    if (!Value.Check(discoveredModelsFileSchema, parsed)) {
+        return {
+            catalogs: new Map(),
+            notice: `The discovered model catalog at ${path} has an unexpected shape and was ignored.`,
+        };
+    }
+    return { catalogs: new Map(Object.entries(parsed.providers)) };
+}
+
+/** Replace the durable discovered lists atomically, one private file beside runtime.toml. */
+async function writeDiscoveredModelsFile(
+    path: string,
+    catalogs: ReadonlyMap<string, DiscoveredProviderCatalog>,
+): Promise<void> {
+    const file = {
+        providers: Object.fromEntries(
+            [...catalogs].sort(([left], [right]) => left.localeCompare(right)),
+        ),
+        version: 1 as const,
+    };
+    if (!Value.Check(discoveredModelsFileSchema, file)) {
+        throw new Error("The discovered model catalog is invalid.");
+    }
+    const contents = `${JSON.stringify(file, null, 4)}\n`;
+    await mkdir(dirname(path), { mode: 0o700, recursive: true });
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+        await writeFile(temporary, contents, { flag: "wx", mode: 0o600 });
+        await rename(temporary, path);
+    } finally {
+        await rm(temporary, { force: true }).catch(() => undefined);
+    }
+}
+
+function sameDiscoveredModels(
+    left: readonly DiscoveredAgentModel[],
+    right: readonly DiscoveredAgentModel[],
+): boolean {
+    const key = (model: DiscoveredAgentModel): string =>
+        [
+            model.id,
+            model.name,
+            model.effortLevels.join(","),
+            model.defaultEffort,
+            (model.serviceTiers ?? []).join(","),
+            String(model.contextWindow),
+            String(model.autoCompactWindow),
+        ].join("|");
+    return (
+        left.length === right.length &&
+        left.every((model, index) => key(model) === key(right[index]!))
+    );
 }
 
 /** Replace the user-owned MCP catalog atomically after rendering its normalized values. */
@@ -2202,6 +2429,7 @@ function derivePaths(input: HappyAgentConfigurationInput): HappyAgentConfigurati
         autoDatabasePath: join(agentHome, "auto-agent.sqlite"),
         configHome,
         databasePath: join(agentHome, "agent.sqlite"),
+        discoveredModelsPath: join(agentHome, "discovered-models.json"),
         docsHome: join(happyHome, "docs"),
         generatedPath: join(publicHome, "Generated"),
         globalConfigPath: join(configHome, "happy.toml"),
@@ -2705,6 +2933,9 @@ function normalizeProviderCommon(value: Record<string, unknown>): Record<string,
     return {
         ...(value["auto_enable"] === undefined ? {} : { autoEnable: value["auto_enable"] }),
         ...(value["credential_isolation"] === true ? { credentialIsolation: true } : {}),
+        ...(value["discover_models"] === undefined
+            ? {}
+            : { discoverModels: value["discover_models"] }),
         ...(value["enabled"] === undefined ? {} : { enabled: value["enabled"] }),
         ...(value["exclude_models"] === undefined
             ? {}

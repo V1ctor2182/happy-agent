@@ -273,6 +273,7 @@ export * from "./compute/index.js";
 export * from "./menuBar/index.js";
 
 // Model switch: the notice a model gets when it inherits a conversation it cannot see.
+export * from "./modelDiscovery/index.js";
 export { ModelSwitchModule } from "./modelSwitch/ModelSwitchModule.js";
 export {
     createModelSwitchNotice,

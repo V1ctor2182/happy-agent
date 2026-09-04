@@ -1,5 +1,7 @@
 export {
     ConfigModule,
+    discoveredAgentModelSchema,
+    discoveredProviderCatalogSchema,
     happyAgentConfigSourceSchema,
     happyAgentConfigValuesSchema,
     happyAgentConfigurationInputSchema,
@@ -10,6 +12,9 @@ export {
     type ConfigInferenceFactory,
     type ConfigInferenceOverride,
     type ConfigModuleLoadOptions,
+    type DiscoveredAgentModel,
+    type DiscoveredModelSource,
+    type DiscoveredProviderCatalog,
     type HappyAgentConfigSource,
     type HappyAgentConfigValues,
     type HappyAgentConfiguration,

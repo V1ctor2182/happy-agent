@@ -83,7 +83,10 @@ function until(lifetime: AbortSignal): typeof fetch {
 }
 
 /** Prevent an isolated provider from borrowing credentials from this machine's environment. */
-function providerEnvironment(isolated: boolean, environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function providerEnvironment(
+    isolated: boolean,
+    environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
     if (!isolated) return environment;
     const result = { ...environment };
     for (const name of [

@@ -238,6 +238,7 @@ async function secretsApiFixture() {
         subscriptions as never,
         subscriptions as never,
         subscriptions as never,
+        subscriptions as never,
         secrets,
     );
     const agents = {

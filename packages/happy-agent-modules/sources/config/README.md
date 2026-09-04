@@ -80,8 +80,12 @@ registry holding every configured provider, each constructing its client on firs
 start behind a disabled gate; `ProviderScanModule` opens the gates after bounded local credential
 discovery or an explicit user enable. `models` is the live curated catalog filtered by those gates,
 while `offeredModels` is the stable complete set the agent systems can accept after a later enable.
-Happy Agent never asks a vendor which models exist — the list is source, and a configured provider
-entry decides which of them its own key serves.
+The curated list is source, and a configured provider entry decides which of them its own key
+serves. `ModelDiscoveryModule` may add what a Codex or Claude account actually lists today: those
+routes are kept in `discovered-models.json` under the agent home, read back at the next load, and
+only ever extend the curated catalog. A curated route wins over a discovered one with the same id,
+`include_models` and `exclude_models` apply to both, and `discover_models = false` on a provider
+entry turns the listing off for that account.
 
 A provider may independently narrow delegation with `include_subagent_models` and
 `exclude_subagent_models`. These use the same exact model IDs and exclusion precedence as

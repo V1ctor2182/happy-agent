@@ -93,6 +93,7 @@ import {
     type ProjectEvent,
 } from "../projects/index.js";
 import { ProviderUsageModule } from "../providerUsage/index.js";
+import { ModelDiscoveryModule } from "../modelDiscovery/index.js";
 import { ProviderNotFoundError, ProviderScanModule } from "../providerScan/index.js";
 import {
     SlashCommandInputError,
@@ -287,6 +288,7 @@ export class ApiModule implements AgentModule {
     readonly #usage: UsageModule;
     readonly #providerUsage: ProviderUsageModule;
     readonly #providerScan: ProviderScanModule;
+    readonly #modelDiscovery: ModelDiscoveryModule;
     readonly #happy: HappyModule;
     readonly #profile: ProfileModule;
     readonly #compute: ComputeModule;
@@ -363,6 +365,7 @@ export class ApiModule implements AgentModule {
         usage: UsageModule,
         providerUsage: ProviderUsageModule,
         providerScan: ProviderScanModule,
+        modelDiscovery: ModelDiscoveryModule,
         happy: HappyModule,
         profile: ProfileModule,
         compute: ComputeModule,
@@ -386,6 +389,7 @@ export class ApiModule implements AgentModule {
         this.#usage = usage;
         this.#providerUsage = providerUsage;
         this.#providerScan = providerScan;
+        this.#modelDiscovery = modelDiscovery;
         this.#happy = happy;
         this.#profile = profile;
         this.#compute = compute;
@@ -559,6 +563,12 @@ export class ApiModule implements AgentModule {
                 }
                 try {
                     await this.#providerScan.setOverrides(ctx, body.providers);
+                    await this.#requestModelDiscovery(
+                        ctx,
+                        Object.entries(body.providers)
+                            .filter(([, value]) => value.enabled)
+                            .map(([providerId]) => providerId),
+                    );
                 } catch (error: unknown) {
                     if (error instanceof ProviderNotFoundError) throw notFound(error.message);
                     throw error;
@@ -569,6 +579,12 @@ export class ApiModule implements AgentModule {
             }
             if (request.method === "POST" && url.pathname === "/v0/providers/scan") {
                 const result = await this.#providerScan.scan(ctx);
+                await this.#requestModelDiscovery(
+                    ctx,
+                    result.providers
+                        .filter((provider) => provider.credentials === "available")
+                        .map((provider) => provider.providerId),
+                );
                 this.#journal.append("config.updated", {});
                 sendJson(response, 200, result);
                 return;
@@ -585,7 +601,10 @@ export class ApiModule implements AgentModule {
                 );
                 try {
                     const result = await this.#providerScan.verify(ctx, providerId, body.level);
-                    if (result.status === "passed") this.#journal.append("config.updated", {});
+                    if (result.status === "passed") {
+                        this.#journal.append("config.updated", {});
+                        await this.#requestModelDiscovery(ctx, [providerId]);
+                    }
                     sendJson(response, 200, result);
                 } catch (error: unknown) {
                     if (error instanceof ProviderNotFoundError) throw notFound(error.message);
@@ -1163,6 +1182,9 @@ export class ApiModule implements AgentModule {
         if (this.#unsubscribe.length > 0) return;
         this.#unsubscribe.push(
             this.#events.subscribe((event) => this.#enqueueAgentEvent(ctx, event)),
+            this.#modelDiscovery.onEvent(() => {
+                this.#journal.append("config.updated", {});
+            }),
             this.#projects.onEvent(async (_eventCtx, event) => {
                 await this.#convertProjectEvent(ctx, event);
             }),
@@ -4994,6 +5016,17 @@ export class ApiModule implements AgentModule {
             theme: values.theme,
             workspace: values.workspace,
         };
+    }
+
+    /** Ask an account for a fresh model list once it is known to be usable. */
+    async #requestModelDiscovery(ctx: Context, providerIds: readonly string[]): Promise<void> {
+        for (const providerId of providerIds) {
+            try {
+                await this.#modelDiscovery.request(ctx, providerId);
+            } catch (error: unknown) {
+                ctx.log.debug("Model discovery was not scheduled.", { providerId }, error);
+            }
+        }
     }
 
     #sanitizedCatalog(): ApiCatalog {
